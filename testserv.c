@@ -719,8 +719,9 @@ cttest_job_size_max_plus_1()
     int fd = mustdiallocal(port);
     mustsend(fd, "put 0 0 0 1073741825\r\n");
 
-    const int len = 1024*1024;
-    char body[len+1];
+    #define BODY_LEN (1024*1024)
+    char body[BODY_LEN+1];
+    const int len = BODY_LEN;
     memset(body, 'a', len);
     body[len] = 0;
 
@@ -2091,4 +2092,150 @@ void
 ctbench_put_delete_wal_8192_no_fsync(int n)
 {
     bench_put_delete_size(n, 8192, 512000, 0, 0);
+}
+
+void
+cttest_reserve_mode_fifo()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    mustsend(fd, "reserve-mode fifo\r\n");
+    ckresp(fd, "OK\r\n");
+}
+
+void
+cttest_reserve_mode_weighted()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    mustsend(fd, "reserve-mode weighted\r\n");
+    ckresp(fd, "OK\r\n");
+}
+
+void
+cttest_reserve_mode_bad_format()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    mustsend(fd, "reserve-mode blah\r\n");
+    ckresp(fd, "BAD_FORMAT\r\n");
+    mustsend(fd, "reserve-mode \r\n");
+    ckresp(fd, "BAD_FORMAT\r\n");
+}
+
+void
+cttest_watch_with_weight()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    mustsend(fd, "watch foo 4\r\n");
+    ckresp(fd, "WATCHING 2\r\n");
+    // Re-watch updates weight (no new tube)
+    mustsend(fd, "watch foo 2\r\n");
+    ckresp(fd, "WATCHING 2\r\n");
+}
+
+void
+cttest_watch_weight_default()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    // No weight means default weight of 1
+    mustsend(fd, "watch bar\r\n");
+    ckresp(fd, "WATCHING 2\r\n");
+}
+
+void
+cttest_watch_weight_zero_rejected()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    mustsend(fd, "watch foo 0\r\n");
+    ckresp(fd, "BAD_FORMAT\r\n");
+}
+
+void
+cttest_watch_weight_too_large()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    mustsend(fd, "watch foo 10000\r\n");
+    ckresp(fd, "BAD_FORMAT\r\n");
+}
+
+void
+cttest_weighted_reserve_empty_tube()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    mustsend(fd, "reserve-mode weighted\r\n");
+    ckresp(fd, "OK\r\n");
+
+    mustsend(fd, "watch empty 1\r\n");
+    ckresp(fd, "WATCHING 2\r\n");
+
+    // Put a job in default tube
+    mustsend(fd, "put 0 0 120 1\r\n");
+    mustsend(fd, "a\r\n");
+    ckresp(fd, "INSERTED 1\r\n");
+
+    // Reserve should come from default (only tube with jobs)
+    mustsend(fd, "reserve\r\n");
+    ckresp(fd, "RESERVED 1 1\r\n");
+    ckresp(fd, "a\r\n");
+}
+
+void
+cttest_weighted_reserve_distribution()
+{
+    int port = SERVER();
+    int fd = mustdiallocal(port);
+    mustsend(fd, "reserve-mode weighted\r\n");
+    ckresp(fd, "OK\r\n");
+
+    mustsend(fd, "use high\r\n");
+    ckresp(fd, "USING high\r\n");
+
+    // Put many jobs in "high" tube
+    int i;
+    for (i = 0; i < 100; i++) {
+        mustsend(fd, "put 0 0 120 1\r\n");
+        mustsend(fd, "h\r\n");
+        char exp[32];
+        snprintf(exp, sizeof(exp), "INSERTED %d\r\n", i + 1);
+        ckresp(fd, exp);
+    }
+
+    mustsend(fd, "use low\r\n");
+    ckresp(fd, "USING low\r\n");
+
+    for (i = 0; i < 100; i++) {
+        mustsend(fd, "put 0 0 120 1\r\n");
+        mustsend(fd, "l\r\n");
+        char exp[32];
+        snprintf(exp, sizeof(exp), "INSERTED %d\r\n", 100 + i + 1);
+        ckresp(fd, exp);
+    }
+
+    // Watch high:4 low:1, then ignore default
+    mustsend(fd, "watch high 4\r\n");
+    ckresp(fd, "WATCHING 2\r\n");
+    mustsend(fd, "watch low 1\r\n");
+    ckresp(fd, "WATCHING 3\r\n");
+    mustsend(fd, "ignore default\r\n");
+    ckresp(fd, "WATCHING 2\r\n");
+
+    int high_ct = 0, low_ct = 0;
+    for (i = 0; i < 100; i++) {
+        mustsend(fd, "reserve\r\n");
+        readline(fd); // "RESERVED <id> 1\r\n"
+        char *body = readline(fd); // "h\r\n" or "l\r\n"
+        if (body[0] == 'h') high_ct++;
+        else if (body[0] == 'l') low_ct++;
+    }
+    printf("weighted distribution: high=%d low=%d\n", high_ct, low_ct);
+    // With 4:1 ratio, expect ~80 high, ~20 low.
+    // Use wide bounds to avoid flaky tests.
+    assertf(high_ct > 50, "high_ct=%d should be > 50", high_ct);
+    assertf(low_ct > 2, "low_ct=%d should be > 2", low_ct);
 }

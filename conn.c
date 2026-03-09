@@ -1,6 +1,7 @@
 #include "dat.h"
 #include <errno.h>
 #include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,19 +17,39 @@ int verbose = 0;
 static void
 on_watch(Ms *a, Tube *t, size_t i)
 {
-    UNUSED_PARAMETER(a);
-    UNUSED_PARAMETER(i);
+    UNUSED_PARAMETER(t);
+    Conn *c = (Conn*)((char*)a - offsetof(Conn, watch));
+
     tube_iref(t);
     t->watching_ct++;
+
+    if (i >= c->watch_weights_cap) {
+        size_t newcap = a->cap;
+        uint *nw = realloc(c->watch_weights, newcap * sizeof(uint));
+        if (!nw) {
+            // weights array couldn't grow; default weight will be 0
+            // but caller should handle OOM from ms_append anyway
+            return;
+        }
+        c->watch_weights = nw;
+        c->watch_weights_cap = newcap;
+    }
+    c->watch_weights[i] = 1;
 }
 
 static void
 on_ignore(Ms *a, Tube *t, size_t i)
 {
-    UNUSED_PARAMETER(a);
-    UNUSED_PARAMETER(i);
+    Conn *c = (Conn*)((char*)a - offsetof(Conn, watch));
+
     t->watching_ct--;
     tube_dref(t);
+
+    // Mirror the swap that ms_delete does: items[i] = items[--len]
+    // At this point a->len has already been decremented by ms_delete.
+    if (i < c->watch_weights_cap && a->len < c->watch_weights_cap) {
+        c->watch_weights[i] = c->watch_weights[a->len];
+    }
 }
 
 Conn *
@@ -54,6 +75,9 @@ make_conn(int fd, char start_state, Tube *use, Tube *watch)
     c->pending_timeout = -1;
     c->tickpos = 0; // Does not mean anything if in_conns is set to 0.
     c->in_conns = 0;
+    c->reserve_mode = RESERVE_MODE_FIFO;
+    c->watch_weights = NULL;
+    c->watch_weights_cap = 0;
 
     // The list is empty.
     job_list_reset(&c->reserved_jobs);
@@ -269,5 +293,6 @@ connclose(Conn *c)
         c->in_conns = 0;
     }
 
+    free(c->watch_weights);
     free(c);
 }

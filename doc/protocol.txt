@@ -349,10 +349,16 @@ connection. A reserve command will take a job from any of the tubes in the
 watch list. For each new connection, the watch list initially consists of one
 tube, named "default".
 
-    watch <tube>\r\n
+    watch <tube> [<weight>]\r\n
 
  - <tube> is a name at most 200 bytes. It specifies a tube to add to the watch
    list. If the tube doesn't exist, it will be created.
+
+ - <weight> is an optional positive integer from 1 to 9999, defaulting to 1.
+   It sets the weight for this tube, used by weighted reserve mode to determine
+   the probability of selecting a job from this tube relative to other watched
+   tubes. Re-watching an already-watched tube updates its weight without
+   adding a duplicate entry.
 
 The reply is:
 
@@ -373,6 +379,24 @@ The reply is one of:
 
  - "NOT_IGNORED\r\n" if the client attempts to ignore the only tube in its
    watch list.
+
+The "reserve-mode" command sets the reservation strategy for the current
+connection. The default mode is "fifo", which selects jobs by global priority
+across all watched tubes (lowest priority value wins, ties broken by job ID).
+The "weighted" mode uses weighted random tube selection: when multiple watched
+tubes have ready jobs, a tube is chosen randomly with probability proportional
+to its weight (set via the watch command), and the highest-priority job from
+that tube is reserved. This prevents high-volume tubes from starving others.
+
+    reserve-mode <mode>\r\n
+
+ - <mode> is either "fifo" or "weighted".
+
+The reply is:
+
+ - "OK\r\n" to indicate success.
+
+ - "BAD_FORMAT\r\n" if <mode> is not "fifo" or "weighted".
 
 Other Commands
 --------------

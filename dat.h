@@ -366,6 +366,10 @@ int make_server_socket(char *host, char *port);
 #define CONN_TYPE_WORKER   2
 #define CONN_TYPE_WAITING  4
 
+#define RESERVE_MODE_FIFO     0
+#define RESERVE_MODE_WEIGHTED 1
+#define MAX_TUBE_WEIGHT       9999
+
 struct Conn {
     Server *srv;
     Socket sock;
@@ -406,6 +410,10 @@ struct Conn {
 
     Ms  watch;                  // the set of watched tubes by the connection
     Job reserved_jobs;          // linked list header
+
+    char   reserve_mode;        // RESERVE_MODE_FIFO (default) or RESERVE_MODE_WEIGHTED
+    uint   *watch_weights;      // parallel array to watch.items
+    size_t watch_weights_cap;
 };
 int  conn_less(void *ca, void *cb);
 void conn_setpos(void *c, size_t i);

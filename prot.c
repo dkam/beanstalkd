@@ -50,6 +50,7 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define CMD_STATS_TUBE "stats-tube "
 #define CMD_QUIT "quit"
 #define CMD_PAUSE_TUBE "pause-tube"
+#define CMD_RESERVE_MODE "reserve-mode "
 
 #define CONSTSTRLEN(m) (sizeof(m) - 1)
 
@@ -76,6 +77,7 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define CMD_LIST_TUBES_WATCHED_LEN CONSTSTRLEN(CMD_LIST_TUBES_WATCHED)
 #define CMD_STATS_TUBE_LEN CONSTSTRLEN(CMD_STATS_TUBE)
 #define CMD_PAUSE_TUBE_LEN CONSTSTRLEN(CMD_PAUSE_TUBE)
+#define CMD_RESERVE_MODE_LEN CONSTSTRLEN(CMD_RESERVE_MODE)
 
 #define MSG_FOUND "FOUND"
 #define MSG_NOTFOUND "NOT_FOUND\r\n"
@@ -135,7 +137,8 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define OP_PAUSE_TUBE 23
 #define OP_KICKJOB 24
 #define OP_RESERVE_JOB 25
-#define TOTAL_OPS 26
+#define OP_RESERVE_MODE 26
+#define TOTAL_OPS 27
 
 #define STATS_FMT "---\n" \
     "current-jobs-urgent: %" PRIu64 "\n" \
@@ -165,6 +168,7 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
     "cmd-list-tube-used: %" PRIu64 "\n" \
     "cmd-list-tubes-watched: %" PRIu64 "\n" \
     "cmd-pause-tube: %" PRIu64 "\n" \
+    "cmd-reserve-mode: %" PRIu64 "\n" \
     "job-timeouts: %" PRIu64 "\n" \
     "total-jobs: %" PRIu64 "\n" \
     "max-job-size: %zu\n" \
@@ -277,6 +281,7 @@ static const char * op_names[] = {
     CMD_PAUSE_TUBE,
     CMD_KICKJOB,
     CMD_RESERVE_JOB,
+    CMD_RESERVE_MODE,
 };
 
 static Job *remove_ready_job(Job *j);
@@ -784,6 +789,7 @@ which_cmd(Conn *c)
     TEST_CMD(c->cmd, CMD_PEEK_READY, OP_PEEK_READY);
     TEST_CMD(c->cmd, CMD_PEEK_DELAYED, OP_PEEK_DELAYED);
     TEST_CMD(c->cmd, CMD_PEEK_BURIED, OP_PEEK_BURIED);
+    TEST_CMD(c->cmd, CMD_RESERVE_MODE, OP_RESERVE_MODE);
     TEST_CMD(c->cmd, CMD_RESERVE_TIMEOUT, OP_RESERVE_TIMEOUT);
     TEST_CMD(c->cmd, CMD_RESERVE_JOB, OP_RESERVE_JOB);
     TEST_CMD(c->cmd, CMD_RESERVE, OP_RESERVE);
@@ -972,6 +978,7 @@ fmt_stats(char *buf, size_t size, void *x)
                     op_ct[OP_LIST_TUBE_USED],
                     op_ct[OP_LIST_TUBES_WATCHED],
                     op_ct[OP_PAUSE_TUBE],
+                    op_ct[OP_RESERVE_MODE],
                     timeout_ct,
                     global_stat.total_jobs_ct,
                     job_data_size_limit,
@@ -1093,6 +1100,40 @@ read_tube_name(char **tubename, char *buf, char **end)
     if (end)
         *end = buf + len;
     return 0;
+}
+
+// select_weighted_job picks a tube from c->watch using weighted random
+// selection among tubes that have ready, unpaused jobs.
+// Returns the top-priority job from the selected tube, or NULL.
+static Job *
+select_weighted_job(Conn *c)
+{
+    size_t i;
+    uint total_weight = 0;
+    int64 now = nanoseconds();
+
+    // Sum weights of tubes with ready jobs
+    for (i = 0; i < c->watch.len; i++) {
+        Tube *t = c->watch.items[i];
+        if (t->ready.len > 0 && (!t->pause || t->unpause_at <= now)) {
+            total_weight += c->watch_weights[i];
+        }
+    }
+    if (total_weight == 0)
+        return NULL;
+
+    uint r = rand() % total_weight;
+    uint cumulative = 0;
+    for (i = 0; i < c->watch.len; i++) {
+        Tube *t = c->watch.items[i];
+        if (t->ready.len > 0 && (!t->pause || t->unpause_at <= now)) {
+            cumulative += c->watch_weights[i];
+            if (r < cumulative) {
+                return t->ready.data[0];
+            }
+        }
+    }
+    return NULL; // shouldn't reach here
 }
 
 static void
@@ -1458,6 +1499,20 @@ dispatch_cmd(Conn *c)
             return;
         }
 
+        /* weighted mode: pick a tube by weight and reserve its top job */
+        if (c->reserve_mode == RESERVE_MODE_WEIGHTED && conn_ready(c)) {
+            j = select_weighted_job(c);
+            if (j) {
+                j = remove_ready_job(j);
+                if (j) {
+                    global_stat.reserved_ct++;
+                    conn_reserve_job(c, j);
+                    reply_job(c, j, MSG_RESERVED);
+                    return;
+                }
+            }
+        }
+
         /* try to get a new job for this guy */
         wait_for_job(c, timeout);
         process_queue();
@@ -1764,11 +1819,28 @@ dispatch_cmd(Conn *c)
         return;
 
     case OP_WATCH:
-        name = c->cmd + CMD_WATCH_LEN;
+        ;
+        char *weight_end;
+        if (read_tube_name(&name, c->cmd + CMD_WATCH_LEN, &weight_end)) {
+            reply_msg(c, MSG_BAD_FORMAT);
+            return;
+        }
+        char saved = *weight_end;
+        *weight_end = '\0';
         if (!is_valid_tube(name, MAX_TUBE_NAME_LEN - 1)) {
             reply_msg(c, MSG_BAD_FORMAT);
             return;
         }
+
+        // Parse optional weight after tube name
+        uint32 weight = 1;
+        if (saved == ' ') {
+            if (read_u32(&weight, weight_end + 1, NULL) || weight == 0 || weight > MAX_TUBE_WEIGHT) {
+                reply_msg(c, MSG_BAD_FORMAT);
+                return;
+            }
+        }
+
         op_ct[type]++;
 
         TUBE_ASSIGN(t, tube_find_or_make(name));
@@ -1785,6 +1857,19 @@ dispatch_cmd(Conn *c)
             reply_serr(c, MSG_OUT_OF_MEMORY);
             return;
         }
+
+        // Set weight for this tube (find its index)
+        {
+            size_t wi;
+            for (wi = 0; wi < c->watch.len; wi++) {
+                if (((Tube *)c->watch.items[wi])->name[0] &&
+                    strcmp(((Tube *)c->watch.items[wi])->name, name) == 0) {
+                    c->watch_weights[wi] = weight;
+                    break;
+                }
+            }
+        }
+
         reply_line(c, STATE_SEND_WORD, "WATCHING %zu\r\n", c->watch.len);
         return;
 
@@ -1842,6 +1927,20 @@ dispatch_cmd(Conn *c)
         t->stat.pause_ct++;
 
         reply_line(c, STATE_SEND_WORD, "PAUSED\r\n");
+        return;
+
+    case OP_RESERVE_MODE:
+        op_ct[type]++;
+        name = c->cmd + CMD_RESERVE_MODE_LEN;
+        if (strcmp(name, "fifo") == 0) {
+            c->reserve_mode = RESERVE_MODE_FIFO;
+            reply_line(c, STATE_SEND_WORD, "OK\r\n");
+        } else if (strcmp(name, "weighted") == 0) {
+            c->reserve_mode = RESERVE_MODE_WEIGHTED;
+            reply_line(c, STATE_SEND_WORD, "OK\r\n");
+        } else {
+            reply_msg(c, MSG_BAD_FORMAT);
+        }
         return;
 
     default:
@@ -2267,6 +2366,7 @@ prot_init()
 {
     started_at = nanoseconds();
     memset(op_ct, 0, sizeof(op_ct));
+    srand((unsigned)(nanoseconds() ^ getpid()));
 
     int dev_random = open("/dev/urandom", O_RDONLY);
     if (dev_random < 0) {
