@@ -2100,7 +2100,7 @@ cttest_reserve_mode_fifo()
     int port = SERVER();
     int fd = mustdiallocal(port);
     mustsend(fd, "reserve-mode fifo\r\n");
-    ckresp(fd, "OK\r\n");
+    ckresp(fd, "USING fifo\r\n");
 }
 
 void
@@ -2109,7 +2109,7 @@ cttest_reserve_mode_weighted()
     int port = SERVER();
     int fd = mustdiallocal(port);
     mustsend(fd, "reserve-mode weighted\r\n");
-    ckresp(fd, "OK\r\n");
+    ckresp(fd, "USING weighted\r\n");
 }
 
 void
@@ -2169,7 +2169,7 @@ cttest_weighted_reserve_empty_tube()
     int port = SERVER();
     int fd = mustdiallocal(port);
     mustsend(fd, "reserve-mode weighted\r\n");
-    ckresp(fd, "OK\r\n");
+    ckresp(fd, "USING weighted\r\n");
 
     mustsend(fd, "watch empty 1\r\n");
     ckresp(fd, "WATCHING 2\r\n");
@@ -2191,7 +2191,7 @@ cttest_weighted_reserve_distribution()
     int port = SERVER();
     int fd = mustdiallocal(port);
     mustsend(fd, "reserve-mode weighted\r\n");
-    ckresp(fd, "OK\r\n");
+    ckresp(fd, "USING weighted\r\n");
 
     mustsend(fd, "use high\r\n");
     ckresp(fd, "USING high\r\n");

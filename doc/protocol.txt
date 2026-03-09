@@ -394,7 +394,7 @@ that tube is reserved. This prevents high-volume tubes from starving others.
 
 The reply is:
 
- - "OK\r\n" to indicate success.
+ - "USING <mode>\r\n" to indicate success, echoing the mode that was set.
 
  - "BAD_FORMAT\r\n" if <mode> is not "fifo" or "weighted".
 

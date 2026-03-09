@@ -1934,10 +1934,10 @@ dispatch_cmd(Conn *c)
         name = c->cmd + CMD_RESERVE_MODE_LEN;
         if (strcmp(name, "fifo") == 0) {
             c->reserve_mode = RESERVE_MODE_FIFO;
-            reply_line(c, STATE_SEND_WORD, "OK\r\n");
+            reply_line(c, STATE_SEND_WORD, "USING fifo\r\n");
         } else if (strcmp(name, "weighted") == 0) {
             c->reserve_mode = RESERVE_MODE_WEIGHTED;
-            reply_line(c, STATE_SEND_WORD, "OK\r\n");
+            reply_line(c, STATE_SEND_WORD, "USING weighted\r\n");
         } else {
             reply_msg(c, MSG_BAD_FORMAT);
         }
