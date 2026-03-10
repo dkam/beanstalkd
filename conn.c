@@ -61,6 +61,9 @@ make_conn(int fd, char start_state, Tube *use, Tube *watch)
         return NULL;
     }
 
+    c->watch_weights = NULL;
+    c->watch_weights_cap = 0;
+
     ms_init(&c->watch, (ms_event_fn) on_watch, (ms_event_fn) on_ignore);
     if (!ms_append(&c->watch, watch)) {
         free(c);
@@ -76,8 +79,6 @@ make_conn(int fd, char start_state, Tube *use, Tube *watch)
     c->tickpos = 0; // Does not mean anything if in_conns is set to 0.
     c->in_conns = 0;
     c->reserve_mode = RESERVE_MODE_FIFO;
-    c->watch_weights = NULL;
-    c->watch_weights_cap = 0;
 
     // The list is empty.
     job_list_reset(&c->reserved_jobs);
